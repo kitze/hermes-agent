@@ -12,13 +12,15 @@ These tests confirm that:
   3. Mixed media lists (voice + audio) split correctly.
 """
 
-from unittest.mock import patch
+from types import SimpleNamespace
+from unittest.mock import AsyncMock, patch
 
 import pytest
 
 from gateway.config import GatewayConfig, Platform
-from gateway.platforms.base import MessageEvent, MessageType
+from gateway.platforms.base import CachedMedia, MessageEvent, MessageType
 from gateway.session import SessionSource
+from plugins.platforms.telegram.adapter import TelegramAdapter
 
 
 def _make_runner(stt_enabled: bool = True) -> "GatewayRunner":  # type: ignore[name-defined]
@@ -51,6 +53,26 @@ def _audio_event(path: str = "/tmp/song.mp3") -> MessageEvent:
         media_urls=[path],
         media_types=["audio/mpeg"],
     )
+
+
+def _reply_trigger(*, voice: bool) -> SimpleNamespace:
+    file_obj = SimpleNamespace(
+        file_path="voice.ogg" if voice else "song.mp3",
+        download_as_bytearray=AsyncMock(return_value=bytearray(b"audio")),
+    )
+    media = SimpleNamespace(
+        file_size=5,
+        file_name=None if voice else "song.mp3",
+        get_file=AsyncMock(return_value=file_obj),
+    )
+    reply = SimpleNamespace(
+        photo=None,
+        video=None,
+        voice=media if voice else None,
+        audio=None if voice else media,
+        document=None,
+    )
+    return SimpleNamespace(reply_to_message=reply)
 
 
 # ---------------------------------------------------------------------------
@@ -116,6 +138,86 @@ async def test_audio_attachment_context_note_format():
     assert "ask the user what they'd like" not in result.lower()
 
 
+@pytest.mark.asyncio
+async def test_replied_voice_keeps_trigger_text_and_enters_stt():
+    """Replying with instructions to a voice note must transcribe that note."""
+    adapter = object.__new__(TelegramAdapter)
+    adapter._max_doc_bytes = 1024
+    source = SessionSource(platform=Platform.TELEGRAM, chat_id="1", chat_type="dm")
+    event = MessageEvent(
+        text="Transcribe this and tell me the action item",
+        message_type=MessageType.TEXT,
+        source=source,
+    )
+
+    cached = CachedMedia(
+        path="/tmp/replied-voice.ogg",
+        media_type="audio/ogg",
+        kind="audio",
+        display_name="voice.ogg",
+    )
+    with patch("gateway.platforms.base.cache_media_bytes", return_value=cached):
+        await adapter._cache_replied_media(_reply_trigger(voice=True), event)
+
+    assert event.message_type is MessageType.TEXT
+    assert event.media_types == ["audio/ogg"]
+
+    runner = _make_runner(stt_enabled=True)
+    with patch(
+        "tools.transcription_tools.transcribe_audio",
+        return_value={
+            "success": True,
+            "transcript": "Book the dentist appointment tomorrow",
+            "provider": "sotto_direct",
+        },
+    ) as mock_transcribe:
+        result = await runner._prepare_inbound_message_text(
+            event=event,
+            source=source,
+            history=[],
+        )
+
+    mock_transcribe.assert_called_once_with("/tmp/replied-voice.ogg", None, "gateway")
+    assert "Transcribe this and tell me the action item" in result
+    assert "Book the dentist appointment tomorrow" in result
+
+
+@pytest.mark.asyncio
+async def test_replied_audio_file_stays_audio_and_skips_stt():
+    """Telegram music/audio attachments remain opt-in even when replied to."""
+    adapter = object.__new__(TelegramAdapter)
+    adapter._max_doc_bytes = 1024
+    source = SessionSource(platform=Platform.TELEGRAM, chat_id="1", chat_type="dm")
+    event = MessageEvent(
+        text="What is in this file?",
+        message_type=MessageType.TEXT,
+        source=source,
+    )
+
+    cached = CachedMedia(
+        path="/tmp/replied-song.mp3",
+        media_type="audio/mpeg",
+        kind="audio",
+        display_name="song.mp3",
+    )
+    with patch("gateway.platforms.base.cache_media_bytes", return_value=cached):
+        await adapter._cache_replied_media(_reply_trigger(voice=False), event)
+
+    assert event.message_type is MessageType.AUDIO
+    with patch(
+        "tools.transcription_tools.transcribe_audio",
+        side_effect=AssertionError("ordinary audio files must not auto-transcribe"),
+    ):
+        result = await _make_runner()._prepare_inbound_message_text(
+            event=event,
+            source=source,
+            history=[],
+        )
+
+    assert "What is in this file?" in result
+    assert "replied-song.mp3" in result
+
+
 # ---------------------------------------------------------------------------
 # 3. STT disabled still results in no transcription for audio file attachments
 # ---------------------------------------------------------------------------
@@ -124,4 +226,3 @@ async def test_audio_attachment_context_note_format():
 # ---------------------------------------------------------------------------
 # 4. Telegram gateway: msg.audio → MessageType.AUDIO (not VOICE)
 # ---------------------------------------------------------------------------
-

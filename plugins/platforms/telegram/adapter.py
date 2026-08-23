@@ -9242,7 +9242,11 @@ class TelegramAdapter(BasePlatformAdapter):
                 event.message_type = MessageType.PHOTO
             elif cached.kind == "video":
                 event.message_type = MessageType.VIDEO
-            elif cached.kind == "audio":
+            elif cached.kind == "audio" and not getattr(reply_msg, "voice", None):
+                # Keep the triggering TEXT/COMMAND type for replied-to voice
+                # notes.  The per-attachment audio/ogg MIME then routes the
+                # cached note through the gateway's existing STT pipeline,
+                # while Telegram audio files retain AUDIO and stay opt-in.
                 event.message_type = MessageType.AUDIO
         event.text = self._append_observed_note(
             event.text,

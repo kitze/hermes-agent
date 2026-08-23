@@ -188,6 +188,30 @@ def test_unmentioned_group_messages_can_be_observed_without_dispatching():
     asyncio.run(_run())
 
 
+def test_unmentioned_reply_to_voice_stays_quiet_before_media_download():
+    """Mention-only groups must not download replied audio for quiet turns."""
+    async def _run():
+        adapter = _make_adapter(
+            require_mention=True,
+            allowed_chats=["-100"],
+            group_allowed_chats=["-100"],
+        )
+        adapter._cache_replied_media = AsyncMock()
+        message = _group_message("quiet reply")
+        message.reply_to_message = SimpleNamespace(
+            from_user=SimpleNamespace(id=123),
+            voice=SimpleNamespace(file_size=10),
+        )
+        update = SimpleNamespace(update_id=1002, message=message, effective_message=None)
+
+        await adapter._handle_text_message(update, SimpleNamespace())
+
+        adapter._cache_replied_media.assert_not_awaited()
+        adapter._message_handler.assert_not_awaited()
+
+    asyncio.run(_run())
+
+
 def test_observed_group_context_uses_shared_source_and_prompt_for_later_mentions():
     async def _run():
         adapter = _make_adapter(
