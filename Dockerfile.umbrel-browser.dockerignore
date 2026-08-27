@@ -1,0 +1,6 @@
+**
+!Dockerfile.umbrel-browser
+!docker/
+!docker/agent-browser-wrapper.sh
+!tools/
+!tools/local_cdp_browser.py

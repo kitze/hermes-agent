@@ -1,0 +1,30 @@
+FROM ghcr.io/kitze/hermes-agent-umbrel:v2026.8.27-custom3@sha256:c86df514e9a6dabdd842d602a574bb96a93e8285fca93dc7b40855612a065c1f
+
+USER root
+
+ARG AGENT_BROWSER_VERSION=0.35.1
+ARG AGENT_BROWSER_SHA256=7f79e9889ed7b87656fcf2d1917743f84631979d52f5ae9992ee9b6fe132defc
+
+COPY --chown=root:root --chmod=0755 \
+  docker/agent-browser-wrapper.sh \
+  /opt/hermes/bin/agent-browser
+COPY --chown=root:root --chmod=0755 \
+  tools/local_cdp_browser.py \
+  /opt/hermes/tools/local_cdp_browser.py
+
+# Pin the native Linux agent-browser binary used by the Umbrel browser shim.
+# Extract only the target architecture instead of retaining the npm package's
+# roughly 92 MB of macOS, Windows, ARM, and musl binaries.
+RUN curl -fsSL \
+      "https://registry.npmjs.org/agent-browser/-/agent-browser-${AGENT_BROWSER_VERSION}.tgz" \
+      -o /tmp/agent-browser.tgz \
+    && printf '%s  %s\n' "$AGENT_BROWSER_SHA256" /tmp/agent-browser.tgz \
+      | sha256sum -c - \
+    && tar -xzf /tmp/agent-browser.tgz -C /tmp \
+      package/bin/agent-browser-linux-x64 \
+    && install -m 0755 \
+      /tmp/package/bin/agent-browser-linux-x64 \
+      /opt/hermes/bin/agent-browser-real \
+    && rm -rf /tmp/agent-browser.tgz /tmp/package \
+    && /opt/hermes/bin/agent-browser --version \
+      | grep -qx 'agent-browser 0.35.1'
