@@ -22,7 +22,7 @@ concurrency:
 env:
   UPSTREAM_SHA: 5fc308a70719a83cccdbba4c0e39c23f5a8239d5
   IMAGE: ghcr.io/kitze/hermes-agent-umbrel
-  TAG: v2026.8.27-custom2
+  TAG: v2026.8.27-custom3
 
 jobs:
   build:
@@ -41,6 +41,9 @@ jobs:
           git -C /tmp/hermes-source checkout --detach "$UPSTREAM_SHA"
           git -C /tmp/hermes-source apply --check "$GITHUB_WORKSPACE/umbrel-custom/replied-voice-stt.patch"
           git -C /tmp/hermes-source apply "$GITHUB_WORKSPACE/umbrel-custom/replied-voice-stt.patch"
+          HERMES_WEB_SERVER_PATH=/tmp/hermes-source/hermes_cli/web_server.py \
+            python3 "$GITHUB_WORKSPACE/umbrel-custom/patch-umbrel-proxy-auth.py"
+          grep -q HERMES_UMBREL_APP_PROXY_AUTH /tmp/hermes-source/hermes_cli/web_server.py
           cp "$GITHUB_WORKSPACE/Dockerfile.umbrel-custom" /tmp/hermes-source/Dockerfile.umbrel-custom
           cp "$GITHUB_WORKSPACE/Dockerfile.umbrel-custom.dockerignore" /tmp/hermes-source/Dockerfile.umbrel-custom.dockerignore
 

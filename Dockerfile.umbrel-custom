@@ -31,7 +31,8 @@ RUN rm -f \
     && /opt/hermes/.venv/bin/python3 -c \
       "import importlib.metadata as m; assert m.version('hermes-agent') == '0.20.6'; assert m.version('mcp') == '2.0.0'; assert m.version('snowballstemmer') == '3.1.1'" \
     && test -s /opt/hermes/hermes_cli/web_dist/index.html \
-    && test -s /opt/hermes/ui-tui/dist/entry.js
+    && test -s /opt/hermes/ui-tui/dist/entry.js \
+    && grep -q HERMES_UMBREL_APP_PROXY_AUTH /opt/hermes/hermes_cli/web_server.py
 
 # 0.20.6's immutable-image provenance marker. The official 0.20.5 base
 # marker must not make diagnostics report the wrong running version.
