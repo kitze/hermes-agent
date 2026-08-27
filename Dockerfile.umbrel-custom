@@ -1,0 +1,37 @@
+ARG UMBREL_BASE_IMAGE=ghcr.io/getumbrel/hermes-agent-umbrel:v2026.8.19@sha256:555a55ba4f75ce3cdb429fb0468f07bff7825ff1490f91a5b9d391b2c11a1d71
+FROM ${UMBREL_BASE_IMAGE}
+
+USER root
+
+# Reuse Umbrel's dashboard wrapper, production venv, Node tree, Chromium,
+# s6 wiring, and Photon sidecar dependencies from 0.20.5. Overlay the exact
+# 0.20.6 source and locally-built web/TUI artifacts so the host only performs
+# a tiny deterministic image build instead of recompiling Hermes under load.
+COPY --chown=root:root --chmod=a+rX,go-w . /opt/hermes/
+
+# These runtime modules were removed upstream between 0.20.5 and 0.20.6.
+# Delete only those exact stale paths so auto-discovery cannot resurrect them.
+RUN rm -f \
+      /opt/hermes/tools/computer_use/browser_route.py \
+      /opt/hermes/tools/flux3_video_tool.py \
+    && /usr/local/bin/uv pip install \
+      --python /opt/hermes/.venv/bin/python3 \
+      --no-cache \
+      snowballstemmer==3.1.1 \
+    && /usr/local/bin/uv pip install \
+      --python /opt/hermes/.venv/bin/python3 \
+      --no-cache \
+      --no-deps \
+      -e /opt/hermes \
+    && chmod 0755 /opt/hermes /opt/hermes/bin/hermes \
+    && printf '%s\n' '5fc308a70719a83cccdbba4c0e39c23f5a8239d5' > /opt/hermes/.hermes_build_sha \
+    && /opt/hermes/.venv/bin/python3 -c \
+      "import importlib.metadata as m; assert m.version('hermes-agent') == '0.20.6'; assert m.version('mcp') == '2.0.0'; assert m.version('snowballstemmer') == '3.1.1'" \
+    && test -s /opt/hermes/hermes_cli/web_dist/index.html \
+    && test -s /opt/hermes/ui-tui/dist/entry.js
+
+# 0.20.6's immutable-image provenance marker. The official 0.20.5 base
+# marker must not make diagnostics report the wrong running version.
+RUN mkdir -p /etc/hermes \
+    && /opt/hermes/.venv/bin/python3 -c \
+      "import json, pathlib; p=pathlib.Path('/etc/hermes/image-provenance.json'); p.write_text(json.dumps({'schema':1,'deployment_kind':'image','manager':'docker','image':'local/hermes-agent-umbrel','version':'0.20.6','revision':'5fc308a70719a83cccdbba4c0e39c23f5a8239d5'},sort_keys=True,separators=(',',':'))+'\n'); p.chmod(0o444)"
