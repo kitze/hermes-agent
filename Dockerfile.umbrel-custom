@@ -23,7 +23,10 @@ RUN rm -f \
       --no-cache \
       --no-deps \
       -e /opt/hermes \
-    && chmod 0755 /opt/hermes /opt/hermes/bin/hermes \
+    && chmod 0755 \
+      /opt/hermes \
+      /opt/hermes/bin/hermes \
+      /opt/hermes/docker/entrypoint-dispatch.sh \
     && printf '%s\n' '5fc308a70719a83cccdbba4c0e39c23f5a8239d5' > /opt/hermes/.hermes_build_sha \
     && /opt/hermes/.venv/bin/python3 -c \
       "import importlib.metadata as m; assert m.version('hermes-agent') == '0.20.6'; assert m.version('mcp') == '2.0.0'; assert m.version('snowballstemmer') == '3.1.1'" \
@@ -34,4 +37,4 @@ RUN rm -f \
 # marker must not make diagnostics report the wrong running version.
 RUN mkdir -p /etc/hermes \
     && /opt/hermes/.venv/bin/python3 -c \
-      "import json, pathlib; p=pathlib.Path('/etc/hermes/image-provenance.json'); p.write_text(json.dumps({'schema':1,'deployment_kind':'image','manager':'docker','image':'local/hermes-agent-umbrel','version':'0.20.6','revision':'5fc308a70719a83cccdbba4c0e39c23f5a8239d5'},sort_keys=True,separators=(',',':'))+'\n'); p.chmod(0o444)"
+      "import json, pathlib; p=pathlib.Path('/etc/hermes/image-provenance.json'); p.write_text(json.dumps({'schema':1,'deployment_kind':'image','manager':'docker','image':'ghcr.io/kitze/hermes-agent-umbrel','version':'0.20.6','revision':'5fc308a70719a83cccdbba4c0e39c23f5a8239d5'},sort_keys=True,separators=(',',':'))+'\n'); p.chmod(0o444)"
