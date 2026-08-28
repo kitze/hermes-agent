@@ -1,10 +1,16 @@
+import crypto from 'node:crypto'
 import fs from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
+import { DatabaseSync } from 'node:sqlite'
 
 import { afterEach, describe, expect, it, vi } from 'vitest'
 
-import { DesktopBrowserProfileController, resolveActiveChromeProfile } from './browser-profile-controller'
+import {
+  DesktopBrowserProfileController,
+  reencryptChromeCookieDatabaseForAgentBrowser,
+  resolveActiveChromeProfile
+} from './browser-profile-controller'
 
 const temporaryRoots: string[] = []
 
@@ -75,6 +81,53 @@ afterEach(() => {
 })
 
 describe('DesktopBrowserProfileController', () => {
+  it('translates copied Chrome cookies into the keychain used by agent-browser without exposing plaintext', () => {
+    const root = temporaryRoot()
+    const databasePath = path.join(root, 'Cookies')
+    const database = new DatabaseSync(databasePath)
+    const host = 'example.com'
+    const value = 'authenticated-session-fixture'
+    const sourcePassword = Buffer.from('fixture-safe-storage-password')
+    const sourceKey = crypto.pbkdf2Sync(sourcePassword, 'saltysalt', 1_003, 16, 'sha1')
+    const iv = Buffer.alloc(16, 0x20)
+    const sourcePlaintext = Buffer.concat([crypto.createHash('sha256').update(host).digest(), Buffer.from(value)])
+    const sourceCipher = crypto.createCipheriv('aes-128-cbc', sourceKey, iv)
+    const sourceEncrypted = Buffer.concat([
+      Buffer.from('v10'),
+      sourceCipher.update(sourcePlaintext),
+      sourceCipher.final()
+    ])
+
+    database.exec(
+      'CREATE TABLE meta (key TEXT PRIMARY KEY, value TEXT);' +
+        'CREATE TABLE cookies (host_key TEXT, value TEXT, encrypted_value BLOB);'
+    )
+    database.prepare('INSERT INTO meta (key, value) VALUES (?, ?)').run('version', '24')
+    database
+      .prepare('INSERT INTO cookies (host_key, value, encrypted_value) VALUES (?, ?, ?)')
+      .run(host, '', sourceEncrypted)
+    database.close()
+
+    expect(reencryptChromeCookieDatabaseForAgentBrowser(databasePath, sourcePassword)).toBe(1)
+
+    const translatedDatabase = new DatabaseSync(databasePath)
+    const translated = translatedDatabase
+      .prepare('SELECT value, encrypted_value FROM cookies WHERE host_key = ?')
+      .get(host) as { value: string; encrypted_value: Uint8Array }
+
+    translatedDatabase.close()
+    expect(translated.value).toBe('')
+
+    const mockKey = crypto.pbkdf2Sync('mock_password', 'saltysalt', 1_003, 16, 'sha1')
+    const translatedBytes = Buffer.from(translated.encrypted_value)
+    const mockDecipher = crypto.createDecipheriv('aes-128-cbc', mockKey, iv)
+    const decoded = Buffer.concat([mockDecipher.update(translatedBytes.subarray(3)), mockDecipher.final()])
+
+    expect(decoded.subarray(0, 32)).toEqual(crypto.createHash('sha256').update(host).digest())
+    expect(decoded.subarray(32).toString('utf8')).toBe(value)
+    expect(translatedBytes.subarray(3)).not.toEqual(sourceEncrypted.subarray(3))
+  })
+
   it('selects only Chrome Local State last_used and launches the explicit Google Chrome binary', async () => {
     const root = temporaryRoot()
     const chrome = chromeFixture(root)

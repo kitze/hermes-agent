@@ -5,6 +5,7 @@ import fs from 'node:fs'
 import net from 'node:net'
 import os from 'node:os'
 import path from 'node:path'
+import { DatabaseSync } from 'node:sqlite'
 
 const CHROME_EXECUTABLE = '/Applications/Google Chrome.app/Contents/MacOS/Google Chrome'
 const MAX_SESSION_ID_CHARS = 256
@@ -15,6 +16,12 @@ const MAX_SNAPSHOT_CHARS = 50_000
 const MAX_PROFILE_FILES = 50_000
 const MAX_PROFILE_BYTES = 768 * 1024 * 1024
 const COMMAND_TIMEOUT_MS = 24_000
+const CHROME_COOKIE_KEY_ITERATIONS = 1_003
+const CHROME_COOKIE_KEY_LENGTH = 16
+const CHROME_COOKIE_TAG = Buffer.from('v10')
+const CHROME_COOKIE_SALT = Buffer.from('saltysalt')
+const CHROME_COOKIE_IV = Buffer.alloc(16, 0x20)
+const AGENT_BROWSER_MOCK_KEYCHAIN_PASSWORD = Buffer.from('mock_password')
 
 export const DESKTOP_BROWSER_CONTROLLER_CAPABILITIES = Object.freeze([
   'controller.noop',
@@ -342,29 +349,169 @@ function sqliteBackup(source: string, destination: string): boolean {
   }
 }
 
-async function refreshProfileAuth(active: ActiveChromeProfile, snapshotDir: string): Promise<void> {
-  const destinationProfile = path.join(snapshotDir, 'Default')
-
-  for (const relativePath of AUTH_REFRESH_FILES) {
-    const source = path.join(active.sourceDir, relativePath)
-
-    if (!fs.existsSync(source)) {
-      continue
+function readChromeSafeStoragePassword(): Buffer {
+  const result = spawnSync(
+    '/usr/bin/security',
+    ['find-generic-password', '-s', 'Chrome Safe Storage', '-a', 'Chrome', '-w'],
+    {
+      stdio: ['ignore', 'pipe', 'pipe'],
+      timeout: 8_000
     }
+  )
 
-    const destination = path.join(destinationProfile, relativePath)
+  if (result.status !== 0 || !Buffer.isBuffer(result.stdout) || result.stdout.length === 0) {
+    throw new Error('Chrome login data could not be unlocked from macOS Keychain')
+  }
 
-    if (SQLITE_AUTH_FILES.has(path.basename(relativePath))) {
-      if (!sqliteBackup(source, destination)) {
-        throw new Error('Chrome login data could not be copied safely')
+  const password = Buffer.from(result.stdout)
+  result.stdout.fill(0)
+  let end = password.length
+
+  while (end > 0 && [0x0a, 0x0d].includes(password[end - 1])) {
+    end -= 1
+  }
+
+  if (end === 0) {
+    password.fill(0)
+    throw new Error('Chrome login data could not be unlocked from macOS Keychain')
+  }
+
+  if (end === password.length) {
+    return password
+  }
+
+  const trimmed = Buffer.from(password.subarray(0, end))
+  password.fill(0)
+
+  return trimmed
+}
+
+function deriveChromeCookieKey(password: Buffer): Buffer {
+  return crypto.pbkdf2Sync(password, CHROME_COOKIE_SALT, CHROME_COOKIE_KEY_ITERATIONS, CHROME_COOKIE_KEY_LENGTH, 'sha1')
+}
+
+// Chrome 136+ deliberately gives non-default user-data dirs a different
+// encryption boundary, while agent-browser launches persistent profiles with
+// Chromium's mock keychain. Translate only the owner-only snapshot from the
+// real Chrome key to that mock key; the live profile is never modified and no
+// plaintext cookie value is written to disk.
+export function reencryptChromeCookieDatabaseForAgentBrowser(
+  databasePath: string,
+  safeStoragePassword: Buffer
+): number {
+  const sourceKey = deriveChromeCookieKey(safeStoragePassword)
+  const destinationKey = deriveChromeCookieKey(AGENT_BROWSER_MOCK_KEYCHAIN_PASSWORD)
+  const database = new DatabaseSync(databasePath)
+  let converted = 0
+
+  try {
+    const versionRow = database.prepare("SELECT value FROM meta WHERE key = 'version'").get() as
+      { value?: string | number } | undefined
+    const schemaVersion = Number(versionRow?.value || 0)
+    const rows = database
+      .prepare('SELECT rowid, host_key, encrypted_value FROM cookies WHERE length(encrypted_value) > 3')
+      .all() as Array<{ rowid: number; host_key: string; encrypted_value: Uint8Array }>
+    const update = database.prepare("UPDATE cookies SET value = '', encrypted_value = ? WHERE rowid = ?")
+    let encryptedRows = 0
+    let failedRows = 0
+
+    database.exec('BEGIN IMMEDIATE')
+
+    try {
+      for (const row of rows) {
+        const encrypted = Buffer.from(row.encrypted_value || [])
+
+        if (!encrypted.subarray(0, CHROME_COOKIE_TAG.length).equals(CHROME_COOKIE_TAG)) {
+          continue
+        }
+
+        encryptedRows += 1
+
+        try {
+          const decipher = crypto.createDecipheriv('aes-128-cbc', sourceKey, CHROME_COOKIE_IV)
+          const plaintext = Buffer.concat([
+            decipher.update(encrypted.subarray(CHROME_COOKIE_TAG.length)),
+            decipher.final()
+          ])
+
+          if (schemaVersion >= 24) {
+            const expectedHostDigest = crypto.createHash('sha256').update(String(row.host_key)).digest()
+
+            if (
+              plaintext.length < expectedHostDigest.length ||
+              !crypto.timingSafeEqual(plaintext.subarray(0, expectedHostDigest.length), expectedHostDigest)
+            ) {
+              throw new Error('Chrome cookie host binding did not match')
+            }
+          }
+
+          const cipher = crypto.createCipheriv('aes-128-cbc', destinationKey, CHROME_COOKIE_IV)
+          const translated = Buffer.concat([CHROME_COOKIE_TAG, cipher.update(plaintext), cipher.final()])
+
+          update.run(translated, row.rowid)
+          plaintext.fill(0)
+          translated.fill(0)
+          converted += 1
+        } catch {
+          failedRows += 1
+        }
       }
 
-      continue
-    }
+      if (failedRows > 0 || (rows.length > 0 && encryptedRows === 0)) {
+        throw new Error('Chrome cookie encryption format is unsupported')
+      }
 
-    await fs.promises.mkdir(path.dirname(destination), { recursive: true, mode: 0o700 })
-    await fs.promises.copyFile(source, destination)
-    await fs.promises.chmod(destination, 0o600)
+      database.exec('COMMIT')
+    } catch (error) {
+      database.exec('ROLLBACK')
+      throw error
+    }
+  } finally {
+    database.close()
+    sourceKey.fill(0)
+    destinationKey.fill(0)
+  }
+
+  return converted
+}
+
+async function refreshProfileAuth(
+  active: ActiveChromeProfile,
+  snapshotDir: string,
+  safeStoragePasswordReader = readChromeSafeStoragePassword
+): Promise<void> {
+  const destinationProfile = path.join(snapshotDir, 'Default')
+  let safeStoragePassword: Buffer | null = null
+
+  try {
+    for (const relativePath of AUTH_REFRESH_FILES) {
+      const source = path.join(active.sourceDir, relativePath)
+
+      if (!fs.existsSync(source)) {
+        continue
+      }
+
+      const destination = path.join(destinationProfile, relativePath)
+
+      if (SQLITE_AUTH_FILES.has(path.basename(relativePath))) {
+        if (!sqliteBackup(source, destination)) {
+          throw new Error('Chrome login data could not be copied safely')
+        }
+
+        if (path.basename(relativePath) === 'Cookies') {
+          safeStoragePassword ||= safeStoragePasswordReader()
+          reencryptChromeCookieDatabaseForAgentBrowser(destination, safeStoragePassword)
+        }
+
+        continue
+      }
+
+      await fs.promises.mkdir(path.dirname(destination), { recursive: true, mode: 0o700 })
+      await fs.promises.copyFile(source, destination)
+      await fs.promises.chmod(destination, 0o600)
+    }
+  } finally {
+    safeStoragePassword?.fill(0)
   }
 }
 
