@@ -16439,6 +16439,27 @@ def _ws_auth_mode() -> str:
 
 _GATEWAY_WS_PROTOCOL = "hermes-gateway-v1"
 _GATEWAY_WS_TICKET_PROTOCOL_PREFIX = "hermes-gateway-ticket."
+_SESSION_TOKEN_IDENTITY_PROVIDER = "dashboard-session-token"
+
+
+def _session_token_auth_identity(token: str) -> dict:
+    """Return a stable, non-reversible identity for an accepted session token.
+
+    Desktop URL/token connections authenticate ``/api/ws`` with the legacy
+    process session token rather than a dashboard OAuth ticket. Possession of
+    that token already grants the full Gateway RPC surface, but historically
+    the accepted transport carried no ``auth_identity``. That made the secure
+    browser-controller registration path unavailable to remote Desktop clients.
+
+    Derive the identity here, after the server has accepted the credential,
+    instead of trusting any RPC field. Only a SHA-256 digest crosses into the
+    transport; the token itself is never logged, returned, or retained there.
+    """
+    digest = hashlib.sha256(token.encode("utf-8")).hexdigest()
+    return {
+        "user_id": f"session-token:{digest}",
+        "provider": _SESSION_TOKEN_IDENTITY_PROVIDER,
+    }
 
 
 def _gateway_ws_ticket_from_subprotocol(ws: "WebSocket") -> tuple[str, str]:
@@ -16566,6 +16587,10 @@ def _ws_auth_reason(ws: "WebSocket") -> tuple[Optional[str], str]:
     if not token:
         return "no_credential", "none"
     if hmac.compare_digest(token.encode(), _SESSION_TOKEN.encode()):
+        # The token was validated by server state. Stamp a derived principal
+        # exactly like the gated ticket path does; controller registration can
+        # now bind to this transport without accepting client-supplied identity.
+        ws._hermes_auth_identity = _session_token_auth_identity(_SESSION_TOKEN)
         return None, "token"
     return "token_mismatch", "token"
 

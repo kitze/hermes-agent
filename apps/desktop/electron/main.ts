@@ -79,6 +79,7 @@ import {
 } from './bootstrap-platform'
 import { decideBootstrapRepair } from './bootstrap-repair-guard'
 import { runBootstrap } from './bootstrap-runner'
+import { DesktopBrowserProfileController, registerDesktopBrowserControllerIpc } from './browser-profile-controller'
 import {
   BROWSER_WINDOW_HEIGHT,
   BROWSER_WINDOW_MIN_HEIGHT,
@@ -16833,6 +16834,17 @@ registerFsIpc({
 // Git-driven features (worktrees, review pane, repo scan) — see git-ipc.ts.
 registerGitIpc({ resolveGitBinary, resolveGhBinary })
 
+// A remote Hermes session can delegate only the allowlisted browser actions to
+// this Mac's active Chrome profile. Cookie/profile material stays inside this
+// main process and its owner-only managed snapshot.
+const desktopBrowserProfileController = new DesktopBrowserProfileController({
+  homeDir: os.homedir(),
+  userDataDir: app.getPath('userData'),
+  log: rememberLog
+})
+
+registerDesktopBrowserControllerIpc(ipcMain, desktopBrowserProfileController)
+
 // Embedded terminal PTY host (hermes:terminal:*) — see terminal-ipc.ts.
 const terminalIpc = registerTerminalIpc({
   isWindows: IS_WINDOWS,
@@ -17316,6 +17328,10 @@ app.on('open-url', (event, url) => {
 })
 
 app.whenReady().then(() => {
+  if (isPrimaryInstance) {
+    desktopBrowserProfileController.cleanupStaleSnapshotsSync()
+  }
+
   // Warm the login-shell PATH resolution immediately so it usually completes
   // before the backend start path awaits the same single-flight promise.
   void ensureLoginShellPath()
@@ -17485,6 +17501,8 @@ app.on('before-quit', event => {
   if (heldQuitForActiveWork(event)) {
     return
   }
+
+  desktopBrowserProfileController.disposeAllSync()
 
   // A detached remote updater can outlive this Electron process. Do not tear
   // down its SSH observer/restore transaction at the generic SSH shutdown

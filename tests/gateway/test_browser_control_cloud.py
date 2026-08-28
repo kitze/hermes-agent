@@ -38,6 +38,15 @@ def _fake_ticket_subprotocol_ws(ticket):
     )
 
 
+def _fake_token_ws(token):
+    return SimpleNamespace(
+        query_params={"token": token},
+        headers={},
+        client=SimpleNamespace(host="127.0.0.1"),
+        url=SimpleNamespace(path="/api/ws"),
+    )
+
+
 @pytest.fixture
 def gated_dashboard():
     previous = getattr(web_server.app.state, "auth_required", False)
@@ -73,6 +82,28 @@ def test_dashboard_ticket_subprotocol_carries_the_same_server_identity(gated_das
         "provider": "provider-fixture",
     }
     assert ws._hermes_ws_subprotocol == web_server._GATEWAY_WS_PROTOCOL
+
+
+def test_dashboard_session_token_identity_is_server_derived_and_stable(monkeypatch):
+    previous = getattr(web_server.app.state, "auth_required", False)
+    web_server.app.state.auth_required = False
+    monkeypatch.setattr(web_server, "_SESSION_TOKEN", "server-only-token-fixture")
+    try:
+        first = _fake_token_ws("server-only-token-fixture")
+        second = _fake_token_ws("server-only-token-fixture")
+
+        assert web_server._ws_auth_ok(first) is True
+        assert web_server._ws_auth_ok(second) is True
+        assert first._hermes_auth_identity == second._hermes_auth_identity
+        assert first._hermes_auth_identity["provider"] == "dashboard-session-token"
+        assert first._hermes_auth_identity["user_id"].startswith("session-token:")
+        assert "server-only-token-fixture" not in first._hermes_auth_identity["user_id"]
+
+        rejected = _fake_token_ws("client-spoofed-token")
+        assert web_server._ws_auth_ok(rejected) is False
+        assert not hasattr(rejected, "_hermes_auth_identity")
+    finally:
+        web_server.app.state.auth_required = previous
 
 
 def test_ws_transport_records_only_server_authenticated_identity():

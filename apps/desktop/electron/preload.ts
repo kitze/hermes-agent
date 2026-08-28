@@ -36,6 +36,12 @@ contextBridge.exposeInMainWorld('hermesDesktop', {
 
     return () => ipcRenderer.removeListener('hermes:browser-popout:closed', listener)
   },
+  browserController: {
+    prepare: payload => ipcRenderer.invoke('hermes:browser-controller:prepare', payload),
+    execute: payload => ipcRenderer.invoke('hermes:browser-controller:execute', payload),
+    cancel: payload => ipcRenderer.invoke('hermes:browser-controller:cancel', payload),
+    dispose: payload => ipcRenderer.invoke('hermes:browser-controller:dispose', payload)
+  },
   claimAmbientCue: key => ipcRenderer.invoke('hermes:ambient:claim', key),
   wakeIndicator: {
     getState: () => ipcRenderer.invoke('hermes:wake-indicator:get'),

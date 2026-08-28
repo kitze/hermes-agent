@@ -2,6 +2,8 @@ import { JsonRpcGatewayClient } from '@hermes/shared'
 
 import type { HermesApiRequest } from '@/global'
 
+import { BrowserControllerBridge } from './browser-controller-bridge'
+
 // Desktop startup fires a burst of read-only data calls (config, profiles,
 // model info/options, cron) the moment the backend passes readiness. On a
 // profile-heavy or remote install these can each take tens of seconds — e.g.
@@ -25,7 +27,21 @@ const DEFAULT_GATEWAY_REQUEST_TIMEOUT_MS = 30_000
 // ever fires when the turn itself would have been abandoned server-side.
 export const PROMPT_SUBMIT_REQUEST_TIMEOUT_MS = 1_800_000
 
+let gatewayInstanceSequence = 0
+
+function createGatewayInstanceId(): string {
+  gatewayInstanceSequence += 1
+
+  try {
+    return `gateway-${globalThis.crypto.randomUUID()}`
+  } catch {
+    return `gateway-${Date.now()}-${gatewayInstanceSequence}`
+  }
+}
+
 export class HermesGateway extends JsonRpcGatewayClient {
+  private readonly browserControllerBridge: BrowserControllerBridge
+
   constructor() {
     super({
       closedErrorMessage: 'Hermes gateway connection closed',
@@ -34,6 +50,29 @@ export class HermesGateway extends JsonRpcGatewayClient {
       notConnectedErrorMessage: 'Hermes gateway is not connected',
       requestTimeoutMs: DEFAULT_GATEWAY_REQUEST_TIMEOUT_MS
     })
+
+    this.browserControllerBridge = new BrowserControllerBridge({
+      gatewayInstanceId: createGatewayInstanceId(),
+      nativeController: () => window.hermesDesktop?.browserController,
+      onEvent: (type, handler) => this.on(type, handler),
+      onState: handler => this.onState(handler),
+      rawRequest: <T>(method: string, params?: Record<string, unknown>, timeoutMs?: number, signal?: AbortSignal) =>
+        super.request<T>(method, params, timeoutMs, signal)
+    })
+  }
+
+  override async request<T>(
+    method: string,
+    params: Record<string, unknown> = {},
+    timeoutMs = DEFAULT_GATEWAY_REQUEST_TIMEOUT_MS,
+    signal?: AbortSignal
+  ): Promise<T> {
+    await this.browserControllerBridge.beforeGatewayRequest(method, params).catch(() => undefined)
+    const result = await super.request<T>(method, params, timeoutMs, signal)
+
+    await this.browserControllerBridge.afterGatewayRequest(method, result).catch(() => undefined)
+
+    return result
   }
 }
 
