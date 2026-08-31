@@ -33,7 +33,44 @@ def test_tool_call_signature_hashes_canonical_nested_unicode_args_without_exposi
     assert "☤" not in json.dumps(metadata)
 
 
+def test_fallback_classifier_accepts_executor_success_with_empty_failed_list():
+    result = json.dumps({
+        "result": json.dumps({
+            "requested": 31,
+            "created": 31,
+            "failed": [],
+        }),
+        "structuredContent": {
+            "status": "success",
+            "result": {
+                "requested": 31,
+                "created": 31,
+                "failed": [],
+            },
+        },
+    })
 
+    assert classify_tool_failure("execute", result) == (False, "")
+
+
+def test_fallback_classifier_rejects_nonempty_failed_list():
+    result = json.dumps({
+        "result": {
+            "requested": 2,
+            "created": 1,
+            "failed": [{"index": 1, "reason": "invalid card"}],
+        },
+    })
+
+    assert classify_tool_failure("execute", result)[0] is True
+
+def test_fallback_classifier_prefers_outer_failure_over_nested_success():
+    result = json.dumps({
+        "isError": True,
+        "structuredContent": {"status": "success"},
+    })
+
+    assert classify_tool_failure("execute", result)[0] is True
 
 def test_config_parses_nested_warn_and_hard_stop_thresholds():
     cfg = ToolCallGuardrailConfig.from_mapping(
@@ -167,8 +204,6 @@ def test_web_search_cap_blocks_after_limit_regardless_of_hard_stop():
     assert decision.action == "block"
     assert decision.code == "loop_web_search_cap"
     assert decision.should_halt is True
-
-
 
 
 

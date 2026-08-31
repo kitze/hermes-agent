@@ -110,6 +110,27 @@ class TestStructuredContentPreservation:
         data = json.loads(raw)
         assert data["result"] == payload
 
+    def test_successful_empty_failed_list_stays_successful_after_serialization(
+        self, _patch_mcp_server
+    ):
+        """The MCP success signal must survive Hermes' display classifier."""
+        from agent.display import _detect_tool_failure
+
+        session = _patch_mcp_server
+        summary = {"requested": 31, "created": 31, "failed": []}
+        session.call_tool = AsyncMock(
+            return_value=_FakeCallToolResult(
+                content=[_FakeContentBlock(json.dumps(summary))],
+                is_error=False,
+                structuredContent={"status": "success", "result": summary},
+            )
+        )
+        handler = mcp_tool._make_tool_handler("test-server", "my-tool", 30.0)
+
+        raw = handler({})
+
+        assert _detect_tool_failure("my-tool", raw) == (False, "")
+
 
 class TestMetaPassthrough:
     """Server ``_meta`` is surfaced, minus protocol-reserved keys.

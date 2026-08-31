@@ -14,7 +14,10 @@ from dataclasses import dataclass, field
 from typing import Any, Mapping
 
 from utils import safe_json_loads
-from agent.tool_result_classification import file_mutation_result_landed
+from agent.tool_result_classification import (
+    classify_structured_tool_result,
+    file_mutation_result_landed,
+)
 
 
 IDEMPOTENT_TOOL_NAMES = frozenset(
@@ -323,8 +326,14 @@ def classify_tool_failure(tool_name: str, result: str | None) -> tuple[bool, str
             if data.get("success") is False and "exceed the limit" in data.get("error", ""):
                 return True, " [full]"
 
-    lower = result[:500].lower()
-    if '"error"' in lower or '"failed"' in lower or result.startswith("Error"):
+    structured_failure, _detail = classify_structured_tool_result(
+        safe_json_loads(result)
+    )
+    if structured_failure is True:
+        return True, " [error]"
+    if structured_failure is False:
+        return False, ""
+    if isinstance(result, str) and result.startswith("Error"):
         return True, " [error]"
 
     return False, ""

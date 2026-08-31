@@ -96,7 +96,75 @@ class TestDetectToolFailureStructured:
         result = json.dumps({"success": True, "data": "hello"})
         assert _detect_tool_failure("web_search", result) == (False, "")
 
+    def test_executor_success_with_empty_failed_list_not_flagged(self):
+        result = json.dumps({
+            "result": json.dumps({
+                "requested": 31,
+                "created": 31,
+                "failed": [],
+            }),
+            "structuredContent": {
+                "status": "success",
+                "result": {
+                    "requested": 31,
+                    "created": 31,
+                    "failed": [],
+                },
+            },
+        })
 
+        assert _detect_tool_failure("execute", result) == (False, "")
+
+    def test_empty_failed_list_without_status_not_flagged(self):
+        result = json.dumps({
+            "result": json.dumps({
+                "requested": 31,
+                "created": 31,
+                "failed": [],
+            }),
+        })
+
+        assert _detect_tool_failure("execute", result) == (False, "")
+
+    def test_nonempty_failed_list_is_flagged(self):
+        result = json.dumps({
+            "result": {
+                "requested": 2,
+                "created": 1,
+                "failed": [{"index": 1, "reason": "invalid card"}],
+            },
+        })
+
+        is_failure, suffix = _detect_tool_failure("execute", result)
+        assert is_failure is True
+        assert suffix
+
+    def test_explicit_failure_status_is_flagged(self):
+        result = json.dumps({
+            "structuredContent": {
+                "status": "failed",
+                "message": "Dayfold rejected the batch",
+            },
+        })
+
+        is_failure, suffix = _detect_tool_failure("execute", result)
+        assert is_failure is True
+        assert "Dayfold rejected" in suffix
+
+    def test_empty_error_field_not_flagged(self):
+        result = json.dumps({"status": "ok", "error": None})
+        assert _detect_tool_failure("execute", result) == (False, "")
+
+    def test_outer_mcp_failure_overrides_nested_success(self):
+        result = json.dumps({
+            "isError": True,
+            "message": "Executor transport failed",
+            "structuredContent": {"status": "success"},
+        })
+
+        is_failure, suffix = _detect_tool_failure("execute", result)
+        assert is_failure is True
+        assert "Executor transport failed" in suffix
 
 class TestGetCuteToolMessageFailureSuffix:
     """End-to-end: failure suffix is appended by get_cute_tool_message."""
@@ -118,4 +186,3 @@ class TestGetCuteToolMessageFailureSuffix:
         ok = json.dumps({"success": True, "data": "hi"})
         line = get_cute_tool_message("web_search", {"query": "hi"}, 0.2, result=ok)
         assert "[" not in line.split("0.2s", 1)[1]
-
