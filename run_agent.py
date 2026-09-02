@@ -7128,7 +7128,20 @@ class AIAgent:
             "image/jpeg": ".jpg",
             "image/jpg": ".jpg",
         }.get(mime, ".jpg")
-        tmp = tempfile.NamedTemporaryFile(prefix="anthropic_image_", suffix=suffix, delete=False)
+        # Vision runs host-side even when terminal tools use a sandbox.  A
+        # default NamedTemporaryFile lands in /tmp, which is intentionally not
+        # host-readable under a non-local terminal backend.  Keep decoded
+        # inbound images under Hermes's approved media cache instead so the
+        # shared image resolver can read them without crossing the sandbox
+        # boundary.
+        inbound_dir = get_hermes_home() / "cache" / "vision" / "inbound"
+        inbound_dir.mkdir(parents=True, exist_ok=True)
+        tmp = tempfile.NamedTemporaryFile(
+            prefix="anthropic_image_",
+            suffix=suffix,
+            delete=False,
+            dir=inbound_dir,
+        )
         try:
             with tmp:
                 tmp.write(base64.b64decode(data))
